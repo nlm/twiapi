@@ -1,12 +1,42 @@
+from __future__ import print_function, absolute_import
 import pycurl, urllib, json
 import base64, random, hmac
 from time import time
 from hashlib import sha1
 
-class ApiClient(object):
+class Buffer(object):
 
-    def __init__(self, credentials):
+    def __init__(self, apiclient, callback, callback_param=None):
+        self.buf = ''
+        self.apiclient = apiclient
+        self.callback = callback
+        self.callback_param = callback_param
+
+    def feed(self, data):
+        self.buf += data
+        if data.endswith('\n'):
+            try:
+                self.callback(json.loads(self.buf),
+                              self.apiclient, self.callback_param)
+            except ValueError:
+                pass
+            self.buf = ''
+
+
+class Credentials(object):
+
+    def __init__(self, consumer_key, consumer_secret, access_token, access_token_secret):
+        self.consumer_key = consumer_key
+        self.consumer_secret = consumer_secret
+        self.access_token = access_token
+        self.access_token_secret = access_token_secret
+
+
+class Client(object):
+
+    def __init__(self, credentials, debug=True):
         self.credentials = credentials
+        self.debug = debug
 
     @staticmethod
     def _nonce():
@@ -49,6 +79,10 @@ class ApiClient(object):
         hashed = hmac.new(key, bstring, sha1)
         return hashed.digest().encode('base64').rstrip('\n')
 
+    @staticmethod
+    def default_callback(data, apiclient, callback_param):
+        print(data)
+
     def oauth_params(self, method, url, params):
         oauth_params = {
             'oauth_consumer_key': self.credentials.consumer_key,
@@ -71,39 +105,46 @@ class ApiClient(object):
 
         return oauth_params
 
+    def query(self, method, url, params, callback=None, callback_param=None):
+        method = method.upper()
+        if method not in ('GET', 'POST'):
+            raise Exception('unsupported method')
 
-class StreamClient(ApiClient):
+        oauth_params = self.oauth_params(method, url, params)
 
-    def __init__(self, credentials):
-        ApiClient.__init__(self, credentials)
-        self.url = 'https://stream.twitter.com/1.1/statuses/filter.json'
-        self.buf = ''
-
-    def _bufferize(self, data):
-        self.buf += data
-        if data.endswith('\n'):
-            try:
-                self.callback(json.loads(self.buf))
-            except ValueError:
-                pass
-            self.buf = ''
-
-    def run(self, params, callback):
-        self.callback = callback
-        oauth_params = self.oauth_params('POST', self.url, params)
         conn = pycurl.Curl()
-        conn.setopt(pycurl.VERBOSE, True)
-        conn.setopt(pycurl.URL, self.url)
-        conn.setopt(pycurl.WRITEFUNCTION, self._bufferize)
-        conn.setopt(pycurl.POSTFIELDS, self._urlify(params))
-        conn.setopt(pycurl.HTTPHEADER, ['Authorization: OAuth {0}'.format(self._headerify(oauth_params))])
-        conn.perform()
+
+        if callback is not None:
+            buf = Buffer(self, callback, callback_param)
+            conn.setopt(pycurl.WRITEFUNCTION, buf.feed)
+
+        if self.debug is True:
+            conn.setopt(pycurl.VERBOSE, True)
+
+        if method == 'GET':
+            conn.setopt(pycurl.URL, '{0}?{1}'.format(url, self._urlify(params)))
+        else:
+            conn.setopt(pycurl.URL, url)
+            conn.setopt(pycurl.POSTFIELDS, self._urlify(params))
+
+        conn.setopt(pycurl.HTTPHEADER,
+                    ['Authorization: OAuth {0}'.format(self._headerify(oauth_params))])
+
+        return conn.perform()
 
 
-class Credentials(object):
+    def tweet(self, status):
+        self.query('POST', 'https://api.twitter.com/1.1/statuses/update.json',
+                   {'status': str(status)}, self.default_callback)
 
-    def __init__(self, consumer_key, consumer_secret, access_token, access_token_secret):
-        self.consumer_key = consumer_key
-        self.consumer_secret = consumer_secret
-        self.access_token = access_token
-        self.access_token_secret = access_token_secret
+    def retweet(self, tid):
+        self.query('POST', 'https://api.twitter.com/1.1/statuses/retweet/{0}.json'.format(tid),
+                   {'id': str(tid)}, self.default_callback)
+
+    def follow(self, screen_name):
+        self.query('POST', 'https://api.twitter.com/1.1/friendships/create.json',
+                   {'screen_name': str(screen_name), 'follow': 'true'}, self.default_callback)
+
+    def stream(self, params, callback, callback_params=None):
+        self.query('POST', 'https://stream.twitter.com/1.1/statuses/filter.json',
+                   params, callback, callback_params)
