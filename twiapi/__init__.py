@@ -6,7 +6,7 @@ from hashlib import sha1
 
 class Buffer(object):
 
-    def __init__(self, apiclient, callback, callback_param=None):
+    def __init__(self, apiclient, callback=None, callback_param=None):
         self.buf = ''
         self.apiclient = apiclient
         self.callback = callback
@@ -14,13 +14,29 @@ class Buffer(object):
 
     def feed(self, data):
         self.buf += data
-        if data.endswith('\n'):
+        if self.callback is not None and data.endswith('\n'):
             try:
                 self.callback(json.loads(self.buf),
                               self.apiclient, self.callback_param)
             except ValueError:
                 pass
             self.buf = ''
+
+class Callback(object):
+
+    def __init__(self, apiclient, callback, callback_param=None):
+        self.apiclient = apiclient
+        self.callback = callback
+        self.callback_param = callback_param
+
+    def feed(self, data):
+        print('#######################################')
+        print('>' + data + '<')
+        print('#######################################')
+        try:
+            self.callback(json.loads(data), self.apiclient, self.callback_param)
+        except ValueError:
+            pass
 
 
 class Credentials(object):
@@ -81,7 +97,8 @@ class Client(object):
 
     @staticmethod
     def default_callback(data, apiclient, callback_param):
-        print(data)
+        if apiclient.debug is True:
+            print(data)
 
     def oauth_params(self, method, url, params):
         oauth_params = {
@@ -105,7 +122,8 @@ class Client(object):
 
         return oauth_params
 
-    def query(self, method, url, params, callback=None, callback_param=None):
+
+    def query(self, method, url, params, callback=None, callback_param=None, stream=False):
         method = method.upper()
         if method not in ('GET', 'POST'):
             raise Exception('unsupported method')
@@ -115,7 +133,10 @@ class Client(object):
         conn = pycurl.Curl()
 
         if callback is not None:
-            buf = Buffer(self, callback, callback_param)
+            if stream is True:
+                buf = Buffer(self, callback, callback_param)
+            else:
+                buf = Buffer(self)
             conn.setopt(pycurl.WRITEFUNCTION, buf.feed)
 
         if self.debug is True:
@@ -130,7 +151,12 @@ class Client(object):
         conn.setopt(pycurl.HTTPHEADER,
                     ['Authorization: OAuth {0}'.format(self._headerify(oauth_params))])
 
-        return conn.perform()
+        conn.perform()
+        conn.close()
+
+        if stream is False and callback is not None:
+            callback(json.loads(buf.buf), self, callback_param)
+
 
 
     def tweet(self, status):
@@ -147,4 +173,12 @@ class Client(object):
 
     def stream(self, params, callback, callback_params=None):
         self.query('POST', 'https://stream.twitter.com/1.1/statuses/filter.json',
-                   params, callback, callback_params)
+                   params, callback, callback_params, stream=True)
+
+    def suggestions_cat(self, lang, callback, callback_params=None):
+        self.query('GET', 'https://api.twitter.com/1.1/users/suggestions.json',
+                   {'lang': str(lang)}, callback, callback_params)
+
+    def suggestions(self, slug, lang, callback, callback_params=None):
+        self.query('GET', 'https://api.twitter.com/1.1/users/suggestions/{0}.json'.format(slug),
+                   {'lang': str(lang)}, callback, callback_params)
